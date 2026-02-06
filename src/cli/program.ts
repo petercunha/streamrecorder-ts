@@ -23,6 +23,12 @@ interface GlobalOptions {
 }
 
 export async function runCli(argv: string[]): Promise<void> {
+  const daemonRunConfigDir = tryExtractDaemonRunConfigDir(argv);
+  if (daemonRunConfigDir !== null) {
+    await runDaemonProcess(daemonRunConfigDir);
+    return;
+  }
+
   const program = new Command();
   program
     .name("sr")
@@ -337,14 +343,6 @@ export async function runCli(argv: string[]): Promise<void> {
     }
   });
 
-  program
-    .command("daemon-run")
-    .description("Internal daemon process entrypoint")
-    .action(async () => {
-      const options = program.opts<GlobalOptions>();
-      await runDaemonProcess(options.configDir);
-    });
-
   await program.parseAsync(argv);
 }
 
@@ -502,4 +500,41 @@ export function handleCliError(error: unknown): number {
 
 export function printHelpHint(): void {
   console.error(`Run 'sr help' for usage. Default config dir: ${DEFAULT_CONFIG_DIR}`);
+}
+
+function tryExtractDaemonRunConfigDir(argv: string[]): string | null {
+  const args = argv.slice(2);
+  let configDir: string | undefined;
+  let commandName: string | undefined;
+
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+
+    if (token === "--config-dir") {
+      const next = args[i + 1];
+      if (next && !next.startsWith("-")) {
+        configDir = next;
+        i += 1;
+      }
+      continue;
+    }
+
+    if (token.startsWith("--config-dir=")) {
+      configDir = token.slice("--config-dir=".length);
+      continue;
+    }
+
+    if (token.startsWith("-")) {
+      continue;
+    }
+
+    commandName = token;
+    break;
+  }
+
+  if (commandName !== "daemon-run") {
+    return null;
+  }
+
+  return configDir ?? null;
 }
