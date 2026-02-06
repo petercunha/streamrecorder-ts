@@ -300,6 +300,13 @@ export class DbClient {
     return rows.map(mapSessionRow);
   }
 
+  listSessions(): RecordingSession[] {
+    const rows = this.db
+      .prepare("SELECT * FROM recording_sessions ORDER BY started_at ASC")
+      .all() as SessionRow[];
+    return rows.map(mapSessionRow);
+  }
+
   getTargetStats(): TargetStats {
     const row = this.db
       .prepare(

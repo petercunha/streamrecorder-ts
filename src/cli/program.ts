@@ -6,7 +6,6 @@ import { createAppContext, setAppConfigValue } from "./context.js";
 import { normalizeTargetInput } from "../core/target.js";
 import { NotFoundError, ValidationError } from "../shared/errors.js";
 import { CONFIG_KEYS, configKeyFromInput, parseConfigValue } from "../config/settings.js";
-import type { StreamTarget } from "../shared/types.js";
 import { readRuntime } from "../daemon/runtime.js";
 import { DaemonApiClient } from "../daemon/ipcClient.js";
 import { persistConfigDir, migrateDbIfNeeded } from "../config/bootstrap.js";
@@ -109,18 +108,18 @@ Examples:
   program
     .command("ls")
     .alias("list")
-    .description("List configured targets and their current recording state")
+    .description("List configured targets")
     .option("--json", "Output JSON")
     .action((options: { json?: boolean }) => {
-      handleTargetList(program.opts<GlobalOptions>(), options);
+      handleTargetConfigList(program.opts<GlobalOptions>(), options);
     });
 
   program
     .command("status")
-    .description("Alias of ls/list")
+    .description("Show active recording status for each target")
     .option("--json", "Output JSON")
     .action((options: { json?: boolean }) => {
-      handleTargetList(program.opts<GlobalOptions>(), options);
+      handleTargetStatusList(program.opts<GlobalOptions>(), options);
     });
 
   program
@@ -483,17 +482,19 @@ function parseBool(value: string): boolean {
   throw new ValidationError(`Invalid boolean value: ${value}`);
 }
 
-function handleTargetList(globalOptions: GlobalOptions, options: { json?: boolean }): void {
+function handleTargetConfigList(globalOptions: GlobalOptions, options: { json?: boolean }): void {
   const context = createContext(globalOptions);
   try {
     const targets = context.db.listTargets();
-    const activeSessions = context.db.listActiveSessions();
-    const recordingTargetIds = getRecordingTargetIds(activeSessions);
-    const recordingDurations = getRecordingDurations(activeSessions);
+    const allSessions = context.db.listSessions();
+    const totalSizes = getTotalRecordingSizes(allSessions);
     const rows = targets.map((target) => ({
-      ...target,
-      isRecording: recordingTargetIds.has(target.id),
-      recordingDuration: recordingDurations.get(target.id) ?? "-"
+      id: target.id,
+      name: target.displayName,
+      enabled: target.enabled,
+      quality: target.requestedQuality,
+      url: target.normalizedUrl,
+      totalRecordingSizeBytes: totalSizes.get(target.id) ?? 0
     }));
 
     if (options.json) {
@@ -506,27 +507,71 @@ function handleTargetList(globalOptions: GlobalOptions, options: { json?: boolea
       return;
     }
 
-    printTargets(targets, recordingTargetIds, recordingDurations);
+    printTargetConfigs(rows);
   } finally {
     context.close();
   }
 }
 
-function printTargets(
-  targets: StreamTarget[],
-  recordingTargetIds: Set<number>,
-  recordingDurations: Map<number, string>
+function handleTargetStatusList(globalOptions: GlobalOptions, options: { json?: boolean }): void {
+  const context = createContext(globalOptions);
+  try {
+    const targets = context.db.listTargets();
+    const activeSessions = context.db.listActiveSessions();
+    const recordingTargetIds = getRecordingTargetIds(activeSessions);
+    const recordingDurations = getRecordingDurations(activeSessions);
+    const activeFileSizes = getActiveFileSizes(activeSessions);
+    const rows = targets.map((target) => ({
+      id: target.id,
+      name: target.displayName,
+      isRecording: recordingTargetIds.has(target.id),
+      duration: recordingDurations.get(target.id) ?? "-",
+      activeFileSizeBytes: activeFileSizes.get(target.id) ?? 0
+    }));
+
+    if (options.json) {
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+
+    if (targets.length === 0) {
+      console.log("No targets configured");
+      return;
+    }
+
+    printTargetStatus(rows);
+  } finally {
+    context.close();
+  }
+}
+
+function printTargetConfigs(
+  rows: Array<{ id: number; name: string; enabled: boolean; quality: string; url: string; totalRecordingSizeBytes: number }>
 ): void {
-  const rows = targets.map((target) => ({
-    id: target.id,
-    name: target.displayName,
-    enabled: target.enabled,
-    recording: recordingTargetIds.has(target.id),
-    duration: recordingDurations.get(target.id) ?? "-",
-    quality: target.requestedQuality,
-    url: target.normalizedUrl
-  }));
-  console.table(rows);
+  console.table(
+    rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      enabled: row.enabled,
+      quality: row.quality,
+      totalSize: formatBytes(row.totalRecordingSizeBytes),
+      url: row.url
+    }))
+  );
+}
+
+function printTargetStatus(
+  rows: Array<{ id: number; name: string; isRecording: boolean; duration: string; activeFileSizeBytes: number }>
+): void {
+  console.table(
+    rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      recording: row.isRecording,
+      duration: row.duration,
+      activeFileSize: row.isRecording ? formatBytes(row.activeFileSizeBytes) : "-"
+    }))
+  );
 }
 
 function getRecordingTargetIds(sessions: Array<{ targetId: number; pid: number }>): Set<number> {
@@ -552,6 +597,39 @@ function getRecordingDurations(
   return durations;
 }
 
+function getActiveFileSizes(
+  sessions: Array<{ targetId: number; pid: number; outputPath: string; bytesWritten: number | null }>
+): Map<number, number> {
+  const sizes = new Map<number, number>();
+  for (const session of sessions) {
+    if (!isPidRunning(session.pid)) {
+      continue;
+    }
+    sizes.set(session.targetId, resolveRecordingSizeBytes(session.outputPath, session.bytesWritten));
+  }
+  return sizes;
+}
+
+function getTotalRecordingSizes(
+  sessions: Array<{ targetId: number; outputPath: string; bytesWritten: number | null }>
+): Map<number, number> {
+  const totals = new Map<number, number>();
+  for (const session of sessions) {
+    const size = resolveRecordingSizeBytes(session.outputPath, session.bytesWritten);
+    const current = totals.get(session.targetId) ?? 0;
+    totals.set(session.targetId, current + size);
+  }
+  return totals;
+}
+
+function resolveRecordingSizeBytes(outputPath: string, bytesWritten: number | null): number {
+  try {
+    return fs.statSync(outputPath).size;
+  } catch {
+    return bytesWritten ?? 0;
+  }
+}
+
 function formatDurationFromIso(startedAtIso: string): string {
   const startedAtMs = Date.parse(startedAtIso);
   if (Number.isNaN(startedAtMs)) {
@@ -566,6 +644,19 @@ function formatDurationFromIso(startedAtIso: string): string {
 
 function pad2(value: number): string {
   return value.toString().padStart(2, "0");
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
 async function reloadDaemonIfRunning(configDir: string): Promise<void> {
