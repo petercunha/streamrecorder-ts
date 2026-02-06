@@ -6,7 +6,7 @@ Add channels once, run the daemon, and recordings start when streams go live.
 
 ## What it does
 
-- Monitors targets on a poll interval.
+- Monitors streams on a poll interval.
 - Starts/stops Streamlink recording sessions automatically.
 - Stores targets, sessions, and config in SQLite.
 - Exposes CLI controls for targets, daemon lifecycle, and config.
