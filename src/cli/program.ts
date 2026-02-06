@@ -487,10 +487,13 @@ function handleTargetList(globalOptions: GlobalOptions, options: { json?: boolea
   const context = createContext(globalOptions);
   try {
     const targets = context.db.listTargets();
-    const recordingTargetIds = getRecordingTargetIds(context.db.listActiveSessions());
+    const activeSessions = context.db.listActiveSessions();
+    const recordingTargetIds = getRecordingTargetIds(activeSessions);
+    const recordingDurations = getRecordingDurations(activeSessions);
     const rows = targets.map((target) => ({
       ...target,
-      isRecording: recordingTargetIds.has(target.id)
+      isRecording: recordingTargetIds.has(target.id),
+      recordingDuration: recordingDurations.get(target.id) ?? "-"
     }));
 
     if (options.json) {
@@ -503,18 +506,23 @@ function handleTargetList(globalOptions: GlobalOptions, options: { json?: boolea
       return;
     }
 
-    printTargets(targets, recordingTargetIds);
+    printTargets(targets, recordingTargetIds, recordingDurations);
   } finally {
     context.close();
   }
 }
 
-function printTargets(targets: StreamTarget[], recordingTargetIds: Set<number>): void {
+function printTargets(
+  targets: StreamTarget[],
+  recordingTargetIds: Set<number>,
+  recordingDurations: Map<number, string>
+): void {
   const rows = targets.map((target) => ({
     id: target.id,
     name: target.displayName,
     enabled: target.enabled,
     recording: recordingTargetIds.has(target.id),
+    duration: recordingDurations.get(target.id) ?? "-",
     quality: target.requestedQuality,
     url: target.normalizedUrl
   }));
@@ -529,6 +537,35 @@ function getRecordingTargetIds(sessions: Array<{ targetId: number; pid: number }
     }
   }
   return ids;
+}
+
+function getRecordingDurations(
+  sessions: Array<{ targetId: number; pid: number; startedAt: string }>
+): Map<number, string> {
+  const durations = new Map<number, string>();
+  for (const session of sessions) {
+    if (!isPidRunning(session.pid)) {
+      continue;
+    }
+    durations.set(session.targetId, formatDurationFromIso(session.startedAt));
+  }
+  return durations;
+}
+
+function formatDurationFromIso(startedAtIso: string): string {
+  const startedAtMs = Date.parse(startedAtIso);
+  if (Number.isNaN(startedAtMs)) {
+    return "-";
+  }
+  const seconds = Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return `${pad2(hours)}:${pad2(minutes)}:${pad2(secs)}`;
+}
+
+function pad2(value: number): string {
+  return value.toString().padStart(2, "0");
 }
 
 async function reloadDaemonIfRunning(configDir: string): Promise<void> {
