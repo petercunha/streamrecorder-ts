@@ -205,7 +205,11 @@ export class DbClient {
 
   removeTarget(identifier: string): StreamTarget {
     const target = this.findTarget(identifier);
-    this.db.prepare("DELETE FROM targets WHERE id = ?").run(target.id);
+    const remove = this.db.transaction((targetId: number) => {
+      this.db.prepare("DELETE FROM recording_sessions WHERE target_id = ?").run(targetId);
+      this.db.prepare("DELETE FROM targets WHERE id = ?").run(targetId);
+    });
+    remove(target.id);
     return target;
   }
 

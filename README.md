@@ -1,24 +1,21 @@
 # streamrecorder-ts
 
-`streamrecorder-ts` is a cross-platform CLI + daemon that records livestreams with [Streamlink](https://streamlink.github.io/).
+`streamrecorder-ts` is a cross-platform CLI + daemon that automatically records livestreams with [Streamlink](https://streamlink.github.io/).
 
-It polls configured targets, detects when they go live, and starts recording automatically.
+Add channels once, run the daemon, and recordings start when streams go live.
 
-## Features
+## What it does
 
-- Add stream targets by URL or bare username (defaults to Twitch).
-- Run as a background daemon with start/stop/status controls.
-- Configure polling interval, default quality, output directory, and Streamlink binary path.
-- Quality fallback logic:
-  - exact match
-  - closest lower quality (prefers 60fps variant at same height)
-  - closest available quality if no lower one exists
-- Linux/macOS/Windows autostart integration.
+- Monitors targets on a poll interval.
+- Starts/stops Streamlink recording sessions automatically.
+- Stores targets, sessions, and config in SQLite.
+- Exposes CLI controls for targets, daemon lifecycle, and config.
+- Supports autostart on Linux, macOS, and Windows.
 
 ## Requirements
 
-- Node.js 20+
-- `streamlink` installed and reachable in `PATH`
+- Node.js `>=20`
+- `streamlink` installed and available on `PATH`
 
 ## Install
 
@@ -28,9 +25,9 @@ npm run build
 npm link
 ```
 
-This exposes the `sr` command globally.
+After `npm link`, the `sr` command is available globally.
 
-## Quick Start
+## Quick start
 
 ```bash
 sr add ninja
@@ -38,60 +35,126 @@ sr daemon start
 sr status
 ```
 
-Useful commands:
+Add more targets:
 
 ```bash
-sr add <stream-link-or-name> [quality]
+sr add shroud 720p60
+sr add https://www.youtube.com/@example best
+sr add https://kick.com/somechannel
+```
+
+## Command reference
+
+Top-level commands:
+
+```bash
+sr add <target> [quality]
 sr rm|del <target>
-sr ls|list
-sr status
-sr edit <target> [--quality <q>] [--enabled <bool>] [--name <alias>] [--url <url-or-name>]
-sr stats
+sr ls|list [--json]
+sr status [--json]
+sr edit <target> [--quality <q>] [--enabled <bool>] [--name <displayName>] [--url <target>]
+sr stats [--json]
 sr config list|get|set
 sr daemon start|stop|status|enable|disable
 ```
 
-`sr status` is an alias of `sr ls/list` and includes current recording state per target.
-
-## Configuration & Storage
-
-Default locations:
-
-- State DB: `~/.config/streamrecorder/state.db`
-- Recordings: `~/Videos/StreamRecorder`
-
-Change config directory:
+Useful help pages:
 
 ```bash
-sr config set configDir /path/to/config
+sr --help
+sr config --help
+sr daemon --help
 ```
 
-Common config keys:
+## Target input behavior
 
-- `defaultQuality`
-- `pollIntervalSec`
-- `probeTimeoutSec`
+- Bare names default to Twitch. Example: `sr add ninja` becomes `https://twitch.tv/ninja`.
+- URLs are normalized (trailing slash removed, hash removed).
+- Platform is inferred from URL host: Twitch, YouTube, Kick, or `generic`.
+
+## Quality selection behavior
+
+When requested quality is unavailable:
+
+- Exact match is used if available.
+- Otherwise, nearest lower/equal height is chosen.
+- At the same height, `60fps` is preferred.
+- If no lower/equal height exists, nearest available quality is chosen.
+
+`best` and `worst` are passed through directly.
+
+## Configuration
+
+Default paths:
+
+- Config/state directory: `~/.config/streamrecorder`
+- Database: `~/.config/streamrecorder/state.db`
+- Recordings: `~/Videos/StreamRecorder`
+
+View current config:
+
+```bash
+sr config list
+```
+
+Set values:
+
+```bash
+sr config set defaultQuality 720p60
+sr config set pollIntervalSec 45
+sr config set streamlinkPath /usr/local/bin/streamlink
+sr config set recordingsDir ~/Videos/StreamRecorder
+```
+
+Supported config keys:
+
 - `recordingsDir`
+- `defaultQuality`
+- `pollIntervalSec` (integer `>=15`)
+- `probeTimeoutSec` (integer `>=5`)
 - `streamlinkPath`
+- `logLevel` (`debug|info|warn|error`)
+- `maxConcurrentRecordings` (integer `>=0`, `0` means no limit)
+- `filenameTemplate` (tokens: `{slug}`, `{startedAt}`, `{quality}`)
+- `configDir` (special key handled via bootstrap metadata)
 
-## Daemon Autostart Notes
+Use a one-off config directory for smoke tests:
 
-### Linux (Ubuntu/systemd user service)
+```bash
+sr --config-dir /tmp/sr-dev add ninja
+sr --config-dir /tmp/sr-dev daemon start
+```
 
-`sr daemon enable` creates a **systemd user** service (`~/.config/systemd/user/streamrecorder.service`).
+## Daemon and autostart
 
-Important: user services usually start after login. If you need recording to start at boot **before login**, enable lingering for that user:
+Daemon controls:
+
+```bash
+sr daemon start
+sr daemon status
+sr daemon stop
+```
+
+Enable autostart:
+
+```bash
+sr daemon enable
+sr daemon disable
+```
+
+Platform details:
+
+- Linux: creates `~/.config/systemd/user/streamrecorder.service`
+- macOS: creates `~/Library/LaunchAgents/com.streamrecorder.daemon.plist`
+- Windows: creates Task Scheduler task `StreamRecorderDaemon`
+
+Linux note:
+
+`systemd --user` services usually start after login. For start-at-boot behavior before login, enable lingering:
 
 ```bash
 sudo loginctl enable-linger <username>
 ```
-
-Without lingering, the daemon may not run until the user session starts.
-
-### macOS / Windows
-
-- macOS uses a per-user LaunchAgent.
-- Windows uses a per-user Task Scheduler task.
 
 ## Development
 
@@ -104,6 +167,9 @@ npm run test:watch
 
 ## Troubleshooting
 
-- `streamlink` not found: set `sr config set streamlinkPath /full/path/to/streamlink`
-- Daemon not running: check `sr daemon status` and restart with `sr daemon start`
-- For isolated testing, use `--config-dir /tmp/sr-dev`
+- `streamlink` not found:
+  - Set `streamlinkPath`, for example `sr config set streamlinkPath /full/path/to/streamlink`
+- Daemon not responding:
+  - Check `sr daemon status`, then restart with `sr daemon stop` and `sr daemon start`
+- No recordings produced:
+  - Verify target URL/name, quality, and `recordingsDir`
