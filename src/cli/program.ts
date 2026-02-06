@@ -32,13 +32,35 @@ export async function runCli(argv: string[]): Promise<void> {
   const program = new Command();
   program
     .name("sr")
-    .description("Stream recorder daemon powered by Streamlink")
-    .option("--config-dir <path>", "Override config directory for this command");
+    .description("Record livestreams automatically with Streamlink when channels go live.")
+    .option("--config-dir <path>", "Use a specific config directory for this command")
+    .showHelpAfterError("(run 'sr help' for command usage)")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sr add ninja
+  sr add https://www.youtube.com/@example best
+  sr daemon start
+  sr status --json
+  sr config set pollIntervalSec 60
+`
+    );
 
   program
     .command("add")
+    .description("Add a stream target to monitor and record")
     .argument("<target>", "Stream URL or streamer name (defaults to twitch)")
-    .argument("[quality]", "Requested quality")
+    .argument("[quality]", "Preferred quality (default from config: defaultQuality)")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sr add ninja
+  sr add shroud 720p60
+  sr add https://kick.com/somechannel best
+`
+    )
     .action(async (target, quality) => {
       const context = createContext(program.opts<GlobalOptions>());
       try {
@@ -62,7 +84,17 @@ export async function runCli(argv: string[]): Promise<void> {
   program
     .command("rm")
     .alias("del")
+    .description("Remove a configured target by id, URL, input name, or display name")
     .argument("<target>", "Target id/url/name")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sr rm 3
+  sr rm ninja
+  sr del https://twitch.tv/ninja
+`
+    )
     .action(async (target) => {
       const context = createContext(program.opts<GlobalOptions>());
       try {
@@ -77,6 +109,7 @@ export async function runCli(argv: string[]): Promise<void> {
   program
     .command("ls")
     .alias("list")
+    .description("List configured targets and their current recording state")
     .option("--json", "Output JSON")
     .action((options: { json?: boolean }) => {
       handleTargetList(program.opts<GlobalOptions>(), options);
@@ -84,7 +117,7 @@ export async function runCli(argv: string[]): Promise<void> {
 
   program
     .command("status")
-    .description("Alias of ls/list with recording status")
+    .description("Alias of ls/list")
     .option("--json", "Output JSON")
     .action((options: { json?: boolean }) => {
       handleTargetList(program.opts<GlobalOptions>(), options);
@@ -92,11 +125,21 @@ export async function runCli(argv: string[]): Promise<void> {
 
   program
     .command("edit")
+    .description("Update quality, enabled state, name, or URL for an existing target")
     .argument("<target>", "Target id/url/name")
     .option("--quality <quality>", "Requested quality")
     .option("--enabled <bool>", "Enable or disable target")
     .option("--name <displayName>", "Display name")
     .option("--url <url>", "Stream URL or streamer name")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sr edit ninja --quality 720p60
+  sr edit 2 --enabled false
+  sr edit ninja --name "Ninja (Main)"
+`
+    )
     .action(async (target, options: { quality?: string; enabled?: string; name?: string; url?: string }) => {
       const context = createContext(program.opts<GlobalOptions>());
       try {
@@ -139,6 +182,7 @@ export async function runCli(argv: string[]): Promise<void> {
 
   program
     .command("stats")
+    .description("Show aggregate stats for targets, sessions, and daemon state")
     .option("--json", "Output JSON")
     .action(async (options: { json?: boolean }) => {
       const context = createContext(program.opts<GlobalOptions>());
@@ -172,9 +216,21 @@ export async function runCli(argv: string[]): Promise<void> {
       }
     });
 
-  const config = program.command("config").description("Read and update configuration");
+  const config = program
+    .command("config")
+    .description("Read and update application configuration")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sr config list
+  sr config get defaultQuality
+  sr config set recordingsDir ~/Videos/StreamRecorder
+  sr config set configDir /srv/streamrecorder
+`
+    );
 
-  config.command("list").action(() => {
+  config.command("list").description("List all config keys and effective values").action(() => {
     const context = createContext(program.opts<GlobalOptions>());
     try {
       const values = context.db.listConfigRaw();
@@ -189,7 +245,8 @@ export async function runCli(argv: string[]): Promise<void> {
 
   config
     .command("get")
-    .argument("<key>")
+    .description("Get a single config value")
+    .argument("<key>", "Config key (for example: defaultQuality, pollIntervalSec, configDir)")
     .action((keyInput: string) => {
       const context = createContext(program.opts<GlobalOptions>());
       try {
@@ -207,8 +264,18 @@ export async function runCli(argv: string[]): Promise<void> {
 
   config
     .command("set")
-    .argument("<key>")
-    .argument("<value>")
+    .description("Set a config value")
+    .argument("<key>", "Config key to set")
+    .argument("<value>", "New value")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sr config set defaultQuality 720p60
+  sr config set pollIntervalSec 45
+  sr config set streamlinkPath /usr/local/bin/streamlink
+`
+    )
     .action(async (keyInput: string, value: string) => {
       const context = createContext(program.opts<GlobalOptions>());
       try {
@@ -239,9 +306,20 @@ export async function runCli(argv: string[]): Promise<void> {
       }
     });
 
-  const daemon = program.command("daemon").description("Control the stream recorder daemon");
+  const daemon = program
+    .command("daemon")
+    .description("Manage the background daemon process and autostart integration")
+    .addHelpText(
+      "after",
+      `
+Examples:
+  sr daemon start
+  sr daemon status
+  sr daemon enable
+`
+    );
 
-  daemon.command("status").action(async () => {
+  daemon.command("status").description("Show daemon runtime status and autostart state").action(async () => {
     const context = createContext(program.opts<GlobalOptions>());
     try {
       const runtime = readRuntime(context.configDir);
@@ -266,7 +344,7 @@ export async function runCli(argv: string[]): Promise<void> {
     }
   });
 
-  daemon.command("start").action(async () => {
+  daemon.command("start").description("Start the daemon in the background").action(async () => {
     const context = createContext(program.opts<GlobalOptions>());
     try {
       const runtime = readRuntime(context.configDir);
@@ -297,7 +375,7 @@ export async function runCli(argv: string[]): Promise<void> {
     }
   });
 
-  daemon.command("stop").action(async () => {
+  daemon.command("stop").description("Stop the running daemon").action(async () => {
     const context = createContext(program.opts<GlobalOptions>());
     try {
       const runtime = readRuntime(context.configDir);
@@ -323,7 +401,7 @@ export async function runCli(argv: string[]): Promise<void> {
     }
   });
 
-  daemon.command("enable").action(() => {
+  daemon.command("enable").description("Enable daemon autostart for the current user").action(() => {
     const context = createContext(program.opts<GlobalOptions>());
     try {
       const details = enableAutostart(context.configDir);
@@ -333,7 +411,7 @@ export async function runCli(argv: string[]): Promise<void> {
     }
   });
 
-  daemon.command("disable").action(() => {
+  daemon.command("disable").description("Disable daemon autostart for the current user").action(() => {
     const context = createContext(program.opts<GlobalOptions>());
     try {
       const details = disableAutostart();
