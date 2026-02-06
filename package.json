@@ -1,0 +1,29 @@
+{
+  "name": "streamrecorder-ts",
+  "version": "0.1.0",
+  "description": "Cross-platform stream recorder daemon powered by Streamlink",
+  "type": "module",
+  "bin": {
+    "sr": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "commander": "^13.1.0",
+    "pino": "^9.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.6"
+  }
+}
