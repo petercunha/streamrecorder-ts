@@ -23,6 +23,7 @@ This exposes the `sr` command.
 sr add <stream-link-or-name> [quality]
 sr rm <stream-link-or-name-or-id>
 sr ls
+sr status
 sr edit <stream-link-or-name-or-id> [--quality <q>] [--enabled <bool>] [--name <alias>] [--url <url-or-name>]
 sr stats
 sr config list
@@ -33,6 +34,7 @@ sr help
 ```
 
 If a bare streamer name is provided, Twitch is assumed.
+`sr status` is an alias of `sr ls/list` and includes an `isRecording`/`recording` flag per target.
 
 ## Storage
 

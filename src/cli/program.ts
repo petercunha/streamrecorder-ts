@@ -16,6 +16,7 @@ import { createLogger } from "../shared/logger.js";
 import { StreamlinkAdapter } from "../streamlink/adapter.js";
 import { RecorderDaemon } from "../daemon/daemon.js";
 import { resolveUserPath } from "../utils/path.js";
+import { isPidRunning } from "../utils/process.js";
 
 interface GlobalOptions {
   configDir?: string;
@@ -72,23 +73,15 @@ export async function runCli(argv: string[]): Promise<void> {
     .alias("list")
     .option("--json", "Output JSON")
     .action((options: { json?: boolean }) => {
-      const context = createContext(program.opts<GlobalOptions>());
-      try {
-        const targets = context.db.listTargets();
-        if (options.json) {
-          console.log(JSON.stringify(targets, null, 2));
-          return;
-        }
+      handleTargetList(program.opts<GlobalOptions>(), options);
+    });
 
-        if (targets.length === 0) {
-          console.log("No targets configured");
-          return;
-        }
-
-        printTargets(targets);
-      } finally {
-        context.close();
-      }
+  program
+    .command("status")
+    .description("Alias of ls/list with recording status")
+    .option("--json", "Output JSON")
+    .action((options: { json?: boolean }) => {
+      handleTargetList(program.opts<GlobalOptions>(), options);
     });
 
   program
@@ -414,15 +407,52 @@ function parseBool(value: string): boolean {
   throw new ValidationError(`Invalid boolean value: ${value}`);
 }
 
-function printTargets(targets: StreamTarget[]): void {
+function handleTargetList(globalOptions: GlobalOptions, options: { json?: boolean }): void {
+  const context = createContext(globalOptions);
+  try {
+    const targets = context.db.listTargets();
+    const recordingTargetIds = getRecordingTargetIds(context.db.listActiveSessions());
+    const rows = targets.map((target) => ({
+      ...target,
+      isRecording: recordingTargetIds.has(target.id)
+    }));
+
+    if (options.json) {
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+
+    if (targets.length === 0) {
+      console.log("No targets configured");
+      return;
+    }
+
+    printTargets(targets, recordingTargetIds);
+  } finally {
+    context.close();
+  }
+}
+
+function printTargets(targets: StreamTarget[], recordingTargetIds: Set<number>): void {
   const rows = targets.map((target) => ({
     id: target.id,
     name: target.displayName,
     enabled: target.enabled,
+    recording: recordingTargetIds.has(target.id),
     quality: target.requestedQuality,
     url: target.normalizedUrl
   }));
   console.table(rows);
+}
+
+function getRecordingTargetIds(sessions: Array<{ targetId: number; pid: number }>): Set<number> {
+  const ids = new Set<number>();
+  for (const session of sessions) {
+    if (isPidRunning(session.pid)) {
+      ids.add(session.targetId);
+    }
+  }
+  return ids;
 }
 
 async function reloadDaemonIfRunning(configDir: string): Promise<void> {
