@@ -52,10 +52,12 @@ Top-level commands:
 sr add <target> [quality]
 sr rm|del <target>
 sr ls|list [--json]
+sr recordings|recs [--json]
 sr status [--json]
-sr edit <target> [--quality <q>] [--enabled <bool>] [--name <displayName>] [--url <target>]
+sr edit [target] [--quality <q>] [--enabled <bool>] [--name <displayName>] [--url <target>]
 sr stats [--json]
-sr config list|get|set
+sr doctor [--json]
+sr config list|ls|get|set
 sr daemon start|stop|restart|status|enable|disable
 ```
 
@@ -72,6 +74,38 @@ sr daemon --help
 - Bare names default to Twitch. Example: `sr add ninja` becomes `https://twitch.tv/ninja`.
 - URLs are normalized (trailing slash removed, hash removed).
 - Platform is inferred from URL host: Twitch, YouTube, Kick, or `generic`.
+
+## Editing targets (`sr edit`)
+
+Use `sr edit` to change one or more properties on an existing target.
+
+Target selector:
+
+- `<target>` can be a target `id`, normalized URL, original input name, or display name.
+- Use `sr ls` first if you want to edit by numeric id.
+
+Supported options:
+
+- `--quality <q>`: updates requested quality (for example `best`, `1080p`, `720p60`).
+- `--enabled <bool>`: enable/disable monitoring (`true|false`, `1|0`, `yes|no`, `on|off`).
+- `--name <displayName>`: changes only the display label used in output/filenames.
+- `--url <target>`: replaces the monitored target URL/name and re-runs normalization/platform detection.
+
+Behavior notes:
+
+- You can combine options in one command.
+- If `--url` is used without `--name`, display name is inferred from the new URL/input.
+- If the daemon is running, config is reloaded automatically after a successful edit.
+
+Examples:
+
+```bash
+sr edit ninja --quality 720p60
+sr edit 2 --enabled false
+sr edit 2 --enabled true --quality best
+sr edit ninja --name "Ninja Main"
+sr edit ninja --url https://kick.com/ninja --name "Ninja (Kick)"
+```
 
 ## Quality selection behavior
 

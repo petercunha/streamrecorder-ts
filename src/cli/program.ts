@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { Command } from "commander";
 import { createAppContext, setAppConfigValue } from "./context.js";
 import { normalizeTargetInput } from "../core/target.js";
@@ -19,6 +19,14 @@ import { isPidRunning } from "../utils/process.js";
 
 interface GlobalOptions {
   configDir?: string;
+}
+
+type DoctorCheckStatus = "pass" | "warn" | "fail";
+
+interface DoctorCheck {
+  name: string;
+  status: DoctorCheckStatus;
+  details: string;
 }
 
 export async function runCli(argv: string[]): Promise<void> {
@@ -40,9 +48,9 @@ export async function runCli(argv: string[]): Promise<void> {
 Examples:
   sr add ninja
   sr add https://www.youtube.com/@example best
+  sr recordings
   sr daemon start
-  sr daemon restart
-  sr status --json
+  sr doctor
   sr config set pollIntervalSec 60
 `
     );
@@ -116,6 +124,15 @@ Examples:
     });
 
   program
+    .command("recordings")
+    .alias("recs")
+    .description("List contents of the recordings directory")
+    .option("--json", "Output JSON")
+    .action((options: { json?: boolean }) => {
+      handleRecordingList(program.opts<GlobalOptions>(), options);
+    });
+
+  program
     .command("status")
     .description("Show active recording status for each target")
     .option("--json", "Output JSON")
@@ -126,7 +143,7 @@ Examples:
   program
     .command("edit")
     .description("Update quality, enabled state, name, or URL for an existing target")
-    .argument("<target>", "Target id/url/name")
+    .argument("[target]", "Target id/url/name")
     .option("--quality <quality>", "Requested quality")
     .option("--enabled <bool>", "Enable or disable target")
     .option("--name <displayName>", "Display name")
@@ -137,10 +154,26 @@ Examples:
 Examples:
   sr edit ninja --quality 720p60
   sr edit 2 --enabled false
+  sr edit 2 --enabled true --quality best
   sr edit ninja --name "Ninja (Main)"
+  sr edit ninja --url https://kick.com/ninja --name "Ninja (Kick)"
+
+Notes:
+  --enabled accepts true/false, 1/0, yes/no, on/off
+  --url re-normalizes platform/url and updates display name unless --name is also provided
 `
     )
-    .action(async (target, options: { quality?: string; enabled?: string; name?: string; url?: string }) => {
+    .action(
+      async (
+        target: string | undefined,
+        options: { quality?: string; enabled?: string; name?: string; url?: string },
+        command: Command
+      ) => {
+      if (!target) {
+        command.outputHelp();
+        return;
+      }
+
       const context = createContext(program.opts<GlobalOptions>());
       try {
         const patch: {
@@ -216,6 +249,14 @@ Examples:
       }
     });
 
+  program
+    .command("doctor")
+    .description("Run environment and runtime health checks")
+    .option("--json", "Output JSON")
+    .action(async (options: { json?: boolean }) => {
+      await runDoctor(program.opts<GlobalOptions>(), options);
+    });
+
   const config = program
     .command("config")
     .description("Read and update application configuration")
@@ -230,7 +271,7 @@ Examples:
 `
     );
 
-  config.command("list").description("List all config keys and effective values").action(() => {
+  config.command("list").alias("ls").description("List all config keys and effective values").action(() => {
     const context = createContext(program.opts<GlobalOptions>());
     try {
       const values = context.db.listConfigRaw();
@@ -600,6 +641,133 @@ function handleTargetStatusList(globalOptions: GlobalOptions, options: { json?: 
   }
 }
 
+function handleRecordingList(globalOptions: GlobalOptions, options: { json?: boolean }): void {
+  const context = createContext(globalOptions);
+  try {
+    const recordingsDir = context.config.recordingsDir;
+    if (!fs.existsSync(recordingsDir)) {
+      throw new ValidationError(`Recordings directory does not exist: ${recordingsDir}`);
+    }
+
+    const entries = fs.readdirSync(recordingsDir, { withFileTypes: true });
+    const rows = entries
+      .map((entry) => {
+        const fullPath = path.join(recordingsDir, entry.name);
+        const stats = fs.statSync(fullPath);
+        const type = entry.isDirectory() ? "dir" : entry.isFile() ? "file" : "other";
+        return {
+          name: entry.name,
+          type,
+          sizeBytes: entry.isFile() ? stats.size : 0,
+          modifiedAt: stats.mtime.toISOString(),
+          path: fullPath
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (options.json) {
+      console.log(JSON.stringify({ recordingsDir, entries: rows }, null, 2));
+      return;
+    }
+
+    if (rows.length === 0) {
+      console.log(`No recordings found in ${recordingsDir}`);
+      return;
+    }
+
+    printRecordingList(recordingsDir, rows);
+  } finally {
+    context.close();
+  }
+}
+
+async function runDoctor(globalOptions: GlobalOptions, options: { json?: boolean }): Promise<void> {
+  const context = createContext(globalOptions);
+  const checks: DoctorCheck[] = [];
+
+  try {
+    checks.push(checkWritableDirectory("Config directory", context.configDir));
+    checks.push(checkWritableDirectory("Recordings directory", context.config.recordingsDir));
+    checks.push(checkReadableWritableFile("State database", context.db.dbPath));
+    checks.push(checkCommandAvailable("Streamlink", context.config.streamlinkPath, ["--version"]));
+
+    const ffmpeg = checkCommandAvailable("ffmpeg", "ffmpeg", ["-version"]);
+    checks.push(
+      ffmpeg.status === "pass"
+        ? ffmpeg
+        : {
+            name: "FFmpeg",
+            status: context.config.postprocessToMp4 ? "fail" : "warn",
+            details: context.config.postprocessToMp4
+              ? `postprocessToMp4=true and ffmpeg is unavailable (${ffmpeg.details})`
+              : `optional, unavailable (${ffmpeg.details})`
+          }
+    );
+
+    checks.push(
+      context.db.listTargets().length > 0
+        ? {
+            name: "Configured targets",
+            status: "pass",
+            details: `${context.db.listTargets().length} configured`
+          }
+        : {
+            name: "Configured targets",
+            status: "warn",
+            details: "no targets configured"
+          }
+    );
+
+    const runtime = readRuntime(context.configDir);
+    if (!runtime) {
+      checks.push({
+        name: "Daemon runtime",
+        status: "warn",
+        details: "daemon is not running"
+      });
+    } else {
+      try {
+        const client = new DaemonApiClient(runtime);
+        const status = await client.status();
+        checks.push({
+          name: "Daemon runtime",
+          status: "pass",
+          details: `running pid=${status.pid} activeRecordings=${status.activeRecordings}`
+        });
+      } catch (error) {
+        checks.push({
+          name: "Daemon runtime",
+          status: "fail",
+          details: `runtime found but status request failed (${errorMessage(error)})`
+        });
+      }
+    }
+  } finally {
+    context.close();
+  }
+
+  const summary = summarizeDoctorChecks(checks);
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: summary.fail === 0,
+          summary,
+          checks
+        },
+        null,
+        2
+      )
+    );
+  } else {
+    printDoctorChecks(checks, summary);
+  }
+
+  if (summary.fail > 0) {
+    process.exitCode = 1;
+  }
+}
+
 function printTargetConfigs(
   rows: Array<{ id: number; name: string; enabled: boolean; quality: string; url: string; totalRecordingSizeBytes: number }>
 ): void {
@@ -627,6 +795,26 @@ function printTargetStatus(
       activeFileSize: row.isRecording ? formatBytes(row.activeFileSizeBytes) : "-"
     }))
   );
+}
+
+function printRecordingList(
+  recordingsDir: string,
+  rows: Array<{
+    name: string;
+    type: string;
+    sizeBytes: number;
+    modifiedAt: string;
+    path: string;
+  }>
+): void {
+  console.log(`recordingsDir=${recordingsDir}`);
+  const maxWidth = Math.max((process.stdout.columns ?? 100) - 1, 30);
+  for (const row of rows) {
+    const suffix = row.type === "dir" ? "/" : "";
+    const details = row.type === "file" ? ` (${formatBytes(row.sizeBytes)})` : "";
+    const line = `${row.name}${suffix}${details}`;
+    console.log(truncateForTable(line, maxWidth));
+  }
 }
 
 function getRecordingTargetIds(sessions: Array<{ targetId: number; pid: number }>): Set<number> {
@@ -701,6 +889,16 @@ function pad2(value: number): string {
   return value.toString().padStart(2, "0");
 }
 
+function truncateForTable(value: string, max: number): string {
+  if (value.length <= max) {
+    return value;
+  }
+  if (max <= 3) {
+    return value.slice(0, max);
+  }
+  return `${value.slice(0, max - 3)}...`;
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) {
     return `${bytes} B`;
@@ -712,6 +910,108 @@ function formatBytes(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function checkWritableDirectory(name: string, dirPath: string): DoctorCheck {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+    const marker = path.join(dirPath, `.sr-doctor-${process.pid}-${Date.now()}.tmp`);
+    fs.writeFileSync(marker, "ok\n", "utf8");
+    fs.unlinkSync(marker);
+    return {
+      name,
+      status: "pass",
+      details: dirPath
+    };
+  } catch (error) {
+    return {
+      name,
+      status: "fail",
+      details: `${dirPath} (${errorMessage(error)})`
+    };
+  }
+}
+
+function checkReadableWritableFile(name: string, filePath: string): DoctorCheck {
+  try {
+    fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK);
+    return {
+      name,
+      status: "pass",
+      details: filePath
+    };
+  } catch (error) {
+    return {
+      name,
+      status: "fail",
+      details: `${filePath} (${errorMessage(error)})`
+    };
+  }
+}
+
+function checkCommandAvailable(name: string, command: string, args: string[]): DoctorCheck {
+  const result = spawnSync(command, args, {
+    stdio: "ignore"
+  });
+
+  if (result.error) {
+    return {
+      name,
+      status: "fail",
+      details: result.error.message
+    };
+  }
+
+  if (result.status !== 0) {
+    return {
+      name,
+      status: "fail",
+      details: `exit code ${result.status}`
+    };
+  }
+
+  return {
+    name,
+    status: "pass",
+    details: command
+  };
+}
+
+function summarizeDoctorChecks(checks: DoctorCheck[]): { pass: number; warn: number; fail: number } {
+  let pass = 0;
+  let warn = 0;
+  let fail = 0;
+
+  for (const check of checks) {
+    if (check.status === "pass") {
+      pass += 1;
+      continue;
+    }
+    if (check.status === "warn") {
+      warn += 1;
+      continue;
+    }
+    fail += 1;
+  }
+
+  return { pass, warn, fail };
+}
+
+function printDoctorChecks(
+  checks: DoctorCheck[],
+  summary: { pass: number; warn: number; fail: number }
+): void {
+  for (const check of checks) {
+    console.log(`[${check.status.toUpperCase()}] ${check.name}: ${check.details}`);
+  }
+  console.log(`Summary: pass=${summary.pass} warn=${summary.warn} fail=${summary.fail}`);
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error);
 }
 
 async function reloadDaemonIfRunning(configDir: string): Promise<void> {
