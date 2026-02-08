@@ -41,6 +41,7 @@ Examples:
   sr add ninja
   sr add https://www.youtube.com/@example best
   sr daemon start
+  sr daemon restart
   sr status --json
   sr config set pollIntervalSec 60
 `
@@ -273,6 +274,7 @@ Examples:
   sr config set defaultQuality 720p60
   sr config set pollIntervalSec 45
   sr config set streamlinkPath /usr/local/bin/streamlink
+  sr config set postprocessToMp4 true
 `
     )
     .action(async (keyInput: string, value: string) => {
@@ -313,6 +315,7 @@ Examples:
       `
 Examples:
   sr daemon start
+  sr daemon restart
   sr daemon status
   sr daemon enable
 `
@@ -395,6 +398,58 @@ Examples:
           console.log("Daemon appears to have already stopped");
         }
       }
+    } finally {
+      context.close();
+    }
+  });
+
+  daemon.command("restart").description("Restart the daemon in the background").action(async () => {
+    const context = createContext(program.opts<GlobalOptions>());
+    try {
+      const runtime = readRuntime(context.configDir);
+      if (runtime) {
+        const client = new DaemonApiClient(runtime);
+        try {
+          await client.shutdown();
+          console.log("Daemon stop requested");
+        } catch {
+          try {
+            process.kill(runtime.pid, "SIGTERM");
+            console.log(`Daemon signaled directly (pid ${runtime.pid})`);
+          } catch {
+            console.log("Daemon appears to have already stopped");
+          }
+        }
+
+        const stopped = await waitForDaemonStop(context.configDir, runtime.pid, 6000);
+        if (!stopped) {
+          throw new Error("Daemon did not stop in time");
+        }
+      }
+
+      const existing = readRuntime(context.configDir);
+      if (existing) {
+        console.log(`Daemon already running (pid ${existing.pid})`);
+        return;
+      }
+
+      const entry = process.argv[1];
+      if (!entry) {
+        throw new Error("Unable to determine CLI entrypoint");
+      }
+
+      const child = spawn(process.execPath, [entry, "--config-dir", context.configDir, "daemon-run"], {
+        detached: true,
+        stdio: "ignore"
+      });
+      child.unref();
+
+      const started = await waitForDaemonRuntime(context.configDir, 4000);
+      if (!started) {
+        throw new Error("Daemon did not start in time");
+      }
+
+      console.log("Daemon restarted");
     } finally {
       context.close();
     }
@@ -678,6 +733,18 @@ async function waitForDaemonRuntime(configDir: string, timeoutMs: number): Promi
   while (Date.now() - startedAt < timeoutMs) {
     const runtime = readRuntime(configDir);
     if (runtime) {
+      return true;
+    }
+    await sleep(150);
+  }
+  return false;
+}
+
+async function waitForDaemonStop(configDir: string, pid: number, timeoutMs: number): Promise<boolean> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const runtime = readRuntime(configDir);
+    if (!isPidRunning(pid) && (!runtime || runtime.pid !== pid)) {
       return true;
     }
     await sleep(150);

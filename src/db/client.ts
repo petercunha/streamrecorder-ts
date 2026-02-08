@@ -297,6 +297,26 @@ export class DbClient {
       .run(input.endedAt, input.exitCode, pid);
   }
 
+  finishRecordingSession(sessionId: number, input: { endedAt: string; exitCode: number | null }): void {
+    this.db
+      .prepare(
+        `UPDATE recording_sessions
+         SET ended_at = ?, exit_code = ?
+         WHERE id = ? AND ended_at IS NULL`
+      )
+      .run(input.endedAt, input.exitCode, sessionId);
+  }
+
+  updateRecordingSessionOutputPath(sessionId: number, outputPath: string): void {
+    this.db
+      .prepare(
+        `UPDATE recording_sessions
+         SET output_path = ?
+         WHERE id = ?`
+      )
+      .run(outputPath, sessionId);
+  }
+
   listActiveSessions(): RecordingSession[] {
     const rows = this.db
       .prepare("SELECT * FROM recording_sessions WHERE ended_at IS NULL ORDER BY started_at ASC")

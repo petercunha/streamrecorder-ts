@@ -9,6 +9,7 @@ export const CONFIG_KEYS: (keyof AppConfig)[] = [
   "pollIntervalSec",
   "probeTimeoutSec",
   "streamlinkPath",
+  "postprocessToMp4",
   "logLevel",
   "maxConcurrentRecordings",
   "filenameTemplate"
@@ -48,6 +49,16 @@ export function parseConfigValue(key: keyof AppConfig, value: string): AppConfig
         throw new ValidationError("streamlinkPath cannot be empty");
       }
       return value.trim();
+    }
+    case "postprocessToMp4": {
+      const normalized = value.trim().toLowerCase();
+      if (["true", "1", "yes", "on"].includes(normalized)) {
+        return true;
+      }
+      if (["false", "0", "no", "off"].includes(normalized)) {
+        return false;
+      }
+      throw new ValidationError("postprocessToMp4 must be a boolean (true/false)");
     }
     case "logLevel": {
       if (!["debug", "info", "warn", "error"].includes(value)) {
@@ -120,6 +131,10 @@ export function mergeConfig(dbValues: Partial<Record<keyof AppConfig, string>>):
       dbValues.streamlinkPath !== undefined
         ? (parseConfigValue("streamlinkPath", dbValues.streamlinkPath) as AppConfig["streamlinkPath"])
         : DEFAULT_CONFIG.streamlinkPath,
+    postprocessToMp4:
+      dbValues.postprocessToMp4 !== undefined
+        ? (parseConfigValue("postprocessToMp4", dbValues.postprocessToMp4) as AppConfig["postprocessToMp4"])
+        : DEFAULT_CONFIG.postprocessToMp4,
     logLevel:
       dbValues.logLevel !== undefined
         ? (parseConfigValue("logLevel", dbValues.logLevel) as AppConfig["logLevel"])

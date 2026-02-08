@@ -16,6 +16,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   pollIntervalSec: 60,
   probeTimeoutSec: 20,
   streamlinkPath: "streamlink",
+  postprocessToMp4: false,
   logLevel: "info",
   maxConcurrentRecordings: 0,
   filenameTemplate: "{slug}_{startedAt}_{quality}.ts"

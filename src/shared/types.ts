@@ -6,6 +6,7 @@ export interface AppConfig {
   pollIntervalSec: number;
   probeTimeoutSec: number;
   streamlinkPath: string;
+  postprocessToMp4: boolean;
   logLevel: LogLevel;
   maxConcurrentRecordings: number;
   filenameTemplate: string;

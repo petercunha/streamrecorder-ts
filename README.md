@@ -16,6 +16,7 @@ Add channels once, run the daemon, and recordings start when streams go live.
 
 - Node.js `>=20`
 - `streamlink` installed and available on `PATH`
+- Optional: `ffmpeg` on `PATH` when `postprocessToMp4=true`
 
 ## Install
 
@@ -55,7 +56,7 @@ sr status [--json]
 sr edit <target> [--quality <q>] [--enabled <bool>] [--name <displayName>] [--url <target>]
 sr stats [--json]
 sr config list|get|set
-sr daemon start|stop|status|enable|disable
+sr daemon start|stop|restart|status|enable|disable
 ```
 
 Useful help pages:
@@ -104,6 +105,7 @@ sr config set defaultQuality 720p60
 sr config set pollIntervalSec 45
 sr config set streamlinkPath /usr/local/bin/streamlink
 sr config set recordingsDir ~/Videos/StreamRecorder
+sr config set postprocessToMp4 true
 ```
 
 Supported config keys:
@@ -113,6 +115,7 @@ Supported config keys:
 - `pollIntervalSec` (integer `>=15`)
 - `probeTimeoutSec` (integer `>=5`)
 - `streamlinkPath`
+- `postprocessToMp4` (`true` enables ffmpeg remux to `.mp4` and removes the source `.ts`)
 - `logLevel` (`debug|info|warn|error`)
 - `maxConcurrentRecordings` (integer `>=0`, `0` means no limit)
 - `filenameTemplate` (tokens: `{slug}`, `{startedAt}`, `{quality}`)
@@ -131,6 +134,7 @@ Daemon controls:
 
 ```bash
 sr daemon start
+sr daemon restart
 sr daemon status
 sr daemon stop
 ```
@@ -170,6 +174,6 @@ npm run test:watch
 - `streamlink` not found:
   - Set `streamlinkPath`, for example `sr config set streamlinkPath /full/path/to/streamlink`
 - Daemon not responding:
-  - Check `sr daemon status`, then restart with `sr daemon stop` and `sr daemon start`
+  - Check `sr daemon status`, then run `sr daemon restart`
 - No recordings produced:
   - Verify target URL/name, quality, and `recordingsDir`

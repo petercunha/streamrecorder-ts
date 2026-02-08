@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import type pino from "pino";
 import { DbClient } from "../db/client.js";
 import type { AppConfig, DaemonRuntime, DaemonStatus, StreamTarget } from "../shared/types.js";
@@ -10,11 +10,13 @@ import { DAEMON_HOST, HTTP_API_PREFIX } from "../shared/constants.js";
 import { StreamlinkAdapter } from "../streamlink/adapter.js";
 import { selectQuality } from "../core/quality.js";
 import { buildRecordingPath } from "../core/filename.js";
+import { shouldPostprocessRecording } from "../core/postprocess.js";
 import { ensureDirSync, fileExists } from "../utils/fs.js";
 import { clearRuntime, writeRuntime } from "./runtime.js";
 import { mergeConfig } from "../config/settings.js";
 
 interface ActiveRecording {
+  sessionId: number;
   target: StreamTarget;
   child: ChildProcess;
   selectedQuality: string;
@@ -174,7 +176,7 @@ export class RecorderDaemon {
       return;
     }
 
-    this.input.db.insertRecordingSession({
+    const sessionId = this.input.db.insertRecordingSession({
       targetId: target.id,
       pid,
       selectedQuality,
@@ -183,6 +185,7 @@ export class RecorderDaemon {
     });
 
     const record: ActiveRecording = {
+      sessionId,
       target,
       child,
       selectedQuality,
@@ -201,23 +204,154 @@ export class RecorderDaemon {
       "recording started"
     );
 
-    child.on("exit", (code) => {
-      this.activeRecordings.delete(target.id);
-      this.input.db.finishRecordingSessionByPid(pid, {
-        endedAt: new Date().toISOString(),
-        exitCode: code
-      });
-      this.input.logger.info({ targetId: target.id, pid, code }, "recording exited");
+    child.on("exit", (code, signal) => {
+      void this.handleRecordingExited(record, pid, code, signal);
     });
 
     child.on("error", (error) => {
-      this.activeRecordings.delete(target.id);
-      this.input.db.finishRecordingSessionByPid(pid, {
-        endedAt: new Date().toISOString(),
-        exitCode: 1
-      });
-      this.input.logger.error({ err: error, targetId: target.id }, "recording process errored");
+      this.handleRecordingErrored(record, pid, error);
     });
+  }
+
+  private async handleRecordingExited(
+    record: ActiveRecording,
+    pid: number,
+    code: number | null,
+    signal: NodeJS.Signals | null
+  ): Promise<void> {
+    this.activeRecordings.delete(record.target.id);
+    this.input.db.finishRecordingSession(record.sessionId, {
+      endedAt: new Date().toISOString(),
+      exitCode: code
+    });
+
+    this.input.logger.info({ targetId: record.target.id, pid, code, signal }, "recording exited");
+
+    if (
+      !shouldPostprocessRecording({
+        enabled: this.config.postprocessToMp4,
+        isStopping: this.isStopping,
+        exitCode: code,
+        signal
+      })
+    ) {
+      return;
+    }
+
+    await this.postprocessRecordingToMp4(record, pid);
+  }
+
+  private handleRecordingErrored(record: ActiveRecording, pid: number, error: unknown): void {
+    this.activeRecordings.delete(record.target.id);
+    this.input.db.finishRecordingSession(record.sessionId, {
+      endedAt: new Date().toISOString(),
+      exitCode: 1
+    });
+    this.input.logger.error({ err: error, targetId: record.target.id, pid }, "recording process errored");
+  }
+
+  private async postprocessRecordingToMp4(record: ActiveRecording, pid: number): Promise<void> {
+    if (!fileExists(record.outputPath)) {
+      this.input.logger.warn(
+        { targetId: record.target.id, pid, outputPath: record.outputPath },
+        "recording file missing; skipped mp4 postprocess"
+      );
+      return;
+    }
+
+    const mp4Path = this.resolveUniquePath(this.replaceWithMp4Extension(record.outputPath));
+
+    try {
+      await this.runFfmpegRemux(record.outputPath, mp4Path);
+      this.input.db.updateRecordingSessionOutputPath(record.sessionId, mp4Path);
+      fs.unlinkSync(record.outputPath);
+      this.input.logger.info(
+        { targetId: record.target.id, pid, outputPath: record.outputPath, mp4Path },
+        "recording postprocessed to mp4"
+      );
+    } catch (error) {
+      this.input.logger.error(
+        { err: error, targetId: record.target.id, pid, outputPath: record.outputPath, mp4Path },
+        "recording mp4 postprocess failed"
+      );
+    }
+  }
+
+  private async runFfmpegRemux(inputPath: string, outputPath: string): Promise<void> {
+    const fastArgs = ["-nostdin", "-y", "-i", inputPath, "-c", "copy", "-movflags", "+faststart", outputPath];
+    try {
+      await this.runFfmpeg(fastArgs);
+      return;
+    } catch (firstError) {
+      this.input.logger.warn(
+        { err: firstError, inputPath, outputPath },
+        "ffmpeg fast remux failed; retrying with tolerant flags"
+      );
+    }
+
+    this.tryUnlink(outputPath);
+
+    const tolerantArgs = [
+      "-nostdin",
+      "-y",
+      "-fflags",
+      "+genpts+discardcorrupt",
+      "-err_detect",
+      "ignore_err",
+      "-i",
+      inputPath,
+      "-c",
+      "copy",
+      "-movflags",
+      "+faststart",
+      outputPath
+    ];
+
+    await this.runFfmpeg(tolerantArgs);
+  }
+
+  private runFfmpeg(args: string[]): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn("ffmpeg", args, {
+        stdio: ["ignore", "ignore", "pipe"]
+      });
+
+      let stderr = "";
+      child.stderr?.setEncoding("utf8");
+      child.stderr?.on("data", (chunk) => {
+        stderr += chunk;
+      });
+
+      child.once("error", (error) => {
+        reject(error);
+      });
+
+      child.once("close", (exitCode) => {
+        if (exitCode === 0) {
+          resolve();
+          return;
+        }
+
+        const details = stderr.trim();
+        reject(new Error(details ? `ffmpeg exited with ${exitCode}: ${details}` : `ffmpeg exited with ${exitCode}`));
+      });
+    });
+  }
+
+  private tryUnlink(filePath: string): void {
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // ignore
+    }
+  }
+
+  private replaceWithMp4Extension(filePath: string): string {
+    const ext = path.extname(filePath);
+    if (!ext) {
+      return `${filePath}.mp4`;
+    }
+    return `${filePath.slice(0, -ext.length)}.mp4`;
   }
 
   private resolveUniqueOutputPath(target: StreamTarget, selectedQuality: string): string {
@@ -228,6 +362,10 @@ export class RecorderDaemon {
       quality: selectedQuality
     });
 
+    return this.resolveUniquePath(basePath);
+  }
+
+  private resolveUniquePath(basePath: string): string {
     if (!fileExists(basePath)) {
       return basePath;
     }
