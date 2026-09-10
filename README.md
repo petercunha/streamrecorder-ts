@@ -31,6 +31,7 @@ After `npm link`, the `sr` command is available globally.
 ## Quick start
 
 ```bash
+sudo loginctl enable-linger <username> # You only need to run this command once. It will allow the daemon to run properly in the background.
 sr daemon start  # You only need to run this command once. It will install the user service that automatically runs in the background and handles recording tasks.
 sr add ninja
 sr status
