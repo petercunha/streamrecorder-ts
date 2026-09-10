@@ -45,6 +45,12 @@ sr add https://kick.com/somechannel
 sr add xqc   # if url and quality are omitted, it assumes twitch.tv / best quality)
 ```
 
+Linux friends! Or, specifically I should say systemd friends. Make sure to enable lingering for user-level services, since the daemon is a user service. This is required to run recording jobs in the background when you're not logged into your server.
+
+```bash
+sudo loginctl enable-linger <username>
+```
+
 ## Command reference
 
 Top-level commands:
