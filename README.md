@@ -31,17 +31,18 @@ After `npm link`, the `sr` command is available globally.
 ## Quick start
 
 ```bash
+sr daemon start  # You only need to run this command once. It will install the user service that automatically runs in the background and handles recording tasks.
 sr add ninja
-sr daemon start
 sr status
 ```
 
 Add more targets:
 
 ```bash
-sr add shroud 720p60
+sr add https://twitch.tv/shroud 720p60
 sr add https://www.youtube.com/@example best
 sr add https://kick.com/somechannel
+sr add xqc   # if url and quality are omitted, it assumes twitch.tv / best quality)
 ```
 
 ## Command reference
